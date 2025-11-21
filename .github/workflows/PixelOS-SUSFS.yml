@@ -1,4 +1,4 @@
-name: Pixel OS KSU-Next (Natsume + Latest SUSFS)
+name: Pixel OS KSU-Main (Latest) + SUSFS (Latest)
 
 on:
     workflow_dispatch:
@@ -24,7 +24,7 @@ on:
           default: "vendor/lahaina-qgki_defconfig"
           type: string
         KERNELSU_CONFIG:
-          description: 'Compile KernelSU-Next'
+          description: 'Compile KernelSU'
           required: true
           default: true
           type: boolean          
@@ -50,7 +50,7 @@ jobs:
         if: github.event.inputs.CCACHE_CONFIG == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: PixelOS-Natsume-Upgraded
+          key: PixelOS-KSU-Main-Upgraded
 
       - name: Setup Environment
         run: |
@@ -79,7 +79,7 @@ jobs:
           git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
           echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-      - name: Upgrade SUSFS & Setup KSU-Next
+      - name: Upgrade SUSFS & Setup Latest KSU
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
@@ -87,20 +87,17 @@ jobs:
           echo "=== 1. Downloading Latest SUSFS ==="
           git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
           
-          echo "=== 2. Overwriting SUSFS Files ==="
-          # We force copy (-f) to overwrite the old v1.5.3 files in Natsume's repo
+          echo "=== 2. Upgrading SUSFS Files ==="
+          # Overwrite old SUSFS files in Natsume's repo with new ones
           cp -rf susfs4ksu/kernel_patches/include/* include/
           cp -f susfs4ksu/kernel_patches/fs/susfs.c fs/susfs.c
           
-          # We DO NOT apply the main kernel patch because Natsume's kernel is likely already patched.
-          # Applying it again would cause conflicts/failures.
-          # Since we replaced the implementation files (susfs.c, headers), the existing hooks in the kernel should just call the new code.
+          echo "=== 3. Setup KernelSU (Official Main) ==="
+          # This pulls the latest 'main' branch of official KernelSU
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           
-          echo "=== 3. Setup KernelSU Next ==="
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          
-          echo "=== 4. Patching KernelSU Next ==="
-          # We still need to patch KSU Next itself to enable SUSFS features
+          echo "=== 4. Patching KernelSU Main for SUSFS ==="
+          # Apply the patch to the newly downloaded KSU source
           KSU_PATCH=$(find susfs4ksu -name "*enable_susfs_for_ksu.patch" | head -n 1)
           if [ -n "$KSU_PATCH" ]; then
              echo "Applying KSU patch: $KSU_PATCH"
@@ -142,7 +139,7 @@ jobs:
           export KERNEL_PATH=$PWD
           git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 $KERNEL_PATH/AnyKernel3
           if test -e $KERNEL_PATH/out/arch/arm64/boot/Image && test -d $KERNEL_PATH/AnyKernel3; then
-             zip_name="PixelOS-KSUNext-SUSFS-martini-${{ env.TAG_NAME }}.zip"
+             zip_name="PixelOS-KSU-SUSFS-martini-${{ env.TAG_NAME }}.zip"
              cd $KERNEL_PATH/AnyKernel3
              cp $KERNEL_PATH/out/arch/arm64/boot/Image $KERNEL_PATH/AnyKernel3
              zip -r ${zip_name} *
@@ -155,7 +152,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PixelOS-KSUNext-SUSFS-martini-${{ env.TAG_NAME }}
+          name: PixelOS-KSU-SUSFS-martini-${{ env.TAG_NAME }}
           path: |
             kernel/AnyKernel3/*
 
@@ -163,9 +160,9 @@ jobs:
         if: github.event.inputs.RELEASE_CONFIG == 'true'
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSUNext-SUSFS-martini-${{ env.TAG_NAME }}.zip"
-          tag: "ONEPLUS9RT-PixelOS-KSUNext-SUSFS-${{ env.TAG_NAME }}"
-          name: "PixelOS KSUNext SUSFS martini ${{ env.TAG_NAME }}"
+          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSU-SUSFS-martini-${{ env.TAG_NAME }}.zip"
+          tag: "ONEPLUS9RT-PixelOS-KSU-SUSFS-${{ env.TAG_NAME }}"
+          name: "PixelOS KSU SUSFS martini ${{ env.TAG_NAME }}"
           allowUpdates: true
           replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
