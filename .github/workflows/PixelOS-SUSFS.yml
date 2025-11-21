@@ -1,4 +1,4 @@
-name: Pixel OS KernelSU Main
+name: Pixel OS SukiSU-Ultra (No SUSFS)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ on:
         default: "vendor/lahaina-qgki_defconfig"
         type: string
       KERNELSU_CONFIG:
-        description: 'Compile KernelSU Main'
+        description: 'Compile SukiSU-Ultra (non-GKI)'
         required: true
         default: true
         type: boolean
@@ -50,7 +50,7 @@ jobs:
         if: github.event.inputs.CCACHE_CONFIG == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: PixelOS-KSU-Main-inline
+          key: PixelOS-SukiSU-Ultra-inline
 
       - name: Setup Environment
         run: |
@@ -79,42 +79,40 @@ jobs:
           git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
           echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-      - name: Setup KernelSU Main
+      - name: Setup SukiSU-Ultra (non-GKI, no SUSFS)
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          # Install latest KernelSU Main into this kernel tree
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-          # Ensure required options
+          # Integrate latest SukiSU-Ultra for non-GKI kernels (no SUSFS branch)
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
+          # Required configs for SukiSU on non-GKI; KALLSYMS is recommended for KPM support
           scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" \
-            -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+            -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS \
+            -e KALLSYMS -e KALLSYMS_ALL
 
       - name: Make kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export KERNEL_DEFCONFIG=${{ github.event.inputs.KERNEL_DEFCONFIG }}
-          echo "=================== Setup Export ========================="
           export KERNEL_PATH=$PWD
           export CLANG_PATH=~/clang
           export PATH=${CLANG_PATH}/bin:${PATH}
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export SUBARCH=arm64
-          echo "=================== Verify Clang ========================="
           if [ ! -e "$CLANG_PATH/README.md" ]; then
             git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
           fi
           sudo apt install --fix-missing
-          echo "========================= Make defconfig =========================="
+          echo "========================= defconfig ========================="
           make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 \
             CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- \
             LD=ld.lld $KERNEL_DEFCONFIG
-          # Disable LTO on low‑RAM runners
           if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
             scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
           fi
-          echo "========================= Build Kernel ==========================="
+          echo "========================= Build ============================="
           make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 -j"$(nproc)" \
             CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- \
@@ -130,7 +128,7 @@ jobs:
           export KERNEL_PATH=$PWD
           git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 $KERNEL_PATH/AnyKernel3
           if test -e $KERNEL_PATH/out/arch/arm64/boot/Image && test -d $KERNEL_PATH/AnyKernel3; then
-             zip_name="PixelOS-KSU-Main-martini-${{ env.TAG_NAME }}.zip"
+             zip_name="PixelOS-SukiSU-Ultra-nonSUSFS-martini-${{ env.TAG_NAME }}.zip"
              cd $KERNEL_PATH/AnyKernel3
              cp $KERNEL_PATH/out/arch/arm64/boot/Image $KERNEL_PATH/AnyKernel3
              zip -r "${zip_name}" *
@@ -143,7 +141,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PixelOS-KSU-Main-martini-${{ env.TAG_NAME }}
+          name: PixelOS-SukiSU-Ultra-nonSUSFS-martini-${{ env.TAG_NAME }}
           path: |
             kernel/AnyKernel3/*
 
@@ -151,9 +149,9 @@ jobs:
         if: github.event.inputs.RELEASE_CONFIG == 'true'
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSU-Main-martini-${{ env.TAG_NAME }}.zip"
-          tag: "ONEPLUS9RT-PixelOS-KSU-Main-${{ env.TAG_NAME }}"
-          name: "PixelOS KernelSU Main martini ${{ env.TAG_NAME }}"
+          artifacts: "kernel/out/arch/arm64/boot/PixelOS-SukiSU-Ultra-nonSUSFS-martini-${{ env.TAG_NAME }}.zip"
+          tag: "ONEPLUS9RT-PixelOS-SukiSU-Ultra-nonSUSFS-${{ env.TAG_NAME }}"
+          name: "PixelOS SukiSU-Ultra nonSUSFS martini ${{ env.TAG_NAME }}"
           allowUpdates: true
           replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
