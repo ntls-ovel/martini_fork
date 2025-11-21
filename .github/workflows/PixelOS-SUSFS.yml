@@ -79,7 +79,7 @@ jobs:
           git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
           echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-      - name: Setup SukiSU-Ultra (non-GKI, no SUSFS) and fix sucompat
+      - name: Setup SukiSU-Ultra (non-GKI, no SUSFS) and stub sucompat
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
@@ -87,44 +87,12 @@ jobs:
           echo "=== 1. Integrate latest SukiSU-Ultra (nongki) ==="
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
 
-          echo "=== 2. Stub ksu_handle_devpts in sucompat.c to avoid SELinux internals ==="
-          python - << 'EOF'
-from pathlib import Path
-
-path = Path("drivers/kernelsu/sucompat.c")
-data = path.read_text()
-
-needle = "int ksu_handle_devpts(struct inode *inode)"
-idx = data.find(needle)
-if idx == -1:
-    print("ksu_handle_devpts not found in sucompat.c; nothing to patch")
-else:
-    # find function body braces
-    brace_start = data.find("{", idx)
-    if brace_start == -1:
-        print("Opening brace not found for ksu_handle_devpts; aborting patch")
-    else:
-        depth = 0
-        i = brace_start
-        while i < len(data):
-            if data[i] == "{":
-                depth += 1
-            elif data[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    i += 1
-                    break
-            i += 1
-        stub = """int ksu_handle_devpts(struct inode *inode)
-{
-\t/* Disabled for this 5.4 non-GKI kernel: missing SELinux internals. */
-\treturn 0;
-}
-"""
-        data = data[:idx] + stub + data[i:]
-        path.write_text(data)
-        print("Patched ksu_handle_devpts with stub.")
-EOF
+          echo "=== 2. Stub ksu_handle_devpts in sucompat.c ==="
+          # This replaces the ksu_handle_devpts function with a stub
+          sed -i '/int ksu_handle_devpts(struct inode \*inode)/{
+            N
+            s/.*/int ksu_handle_devpts(struct inode *inode)\n{ return 0; }/
+          }' drivers/kernelsu/sucompat.c
 
           echo "=== 3. Ensure required kernel options for SukiSU-Ultra ==="
           scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" \
