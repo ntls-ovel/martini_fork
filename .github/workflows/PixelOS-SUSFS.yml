@@ -97,13 +97,25 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           
           echo "=== 4. Patching KernelSU Main for SUSFS ==="
-          # Apply the patch to the newly downloaded KSU source
           KSU_PATCH=$(find susfs4ksu -name "*enable_susfs_for_ksu.patch" | head -n 1)
           if [ -n "$KSU_PATCH" ]; then
              echo "Applying KSU patch: $KSU_PATCH"
              cd drivers/kernelsu
              cp "../../$KSU_PATCH" .
-             patch -p1 < $(basename "$KSU_PATCH") || echo "⚠️ KSU Patch warning"
+             
+             # Try applying patch with -p2 first (strips 'kernel/' prefix common in KSU repo)
+             echo "Attempting patch with -p2..."
+             if patch -p2 < $(basename "$KSU_PATCH"); then
+                 echo "✅ Patch applied successfully with -p2"
+             else
+                 echo "⚠️ -p2 failed, retrying with -p1..."
+                 if patch -p1 < $(basename "$KSU_PATCH"); then
+                     echo "✅ Patch applied successfully with -p1"
+                 else
+                     echo "❌ ALL PATCH ATTEMPTS FAILED. Build will likely fail."
+                     exit 1
+                 fi
+             fi
              cd ../..
           fi
           
@@ -124,6 +136,7 @@ jobs:
           fi
           sudo apt install --fix-missing
           make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- LD=ld.lld $KERNEL_DEFCONFIG
+          # Disable LTO
           if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
               scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
           fi
