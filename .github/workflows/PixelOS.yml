@@ -1,15 +1,9 @@
-name: OnePlus 9RT • SukiSU Ultra (No SUSFS) - Nov 2025
+name: OnePlus 9RT • SukiSU Ultra (No SUSFS) - Working Nov 22 2025
 
 on:
   workflow_dispatch:
     inputs:
       RELEASE_CONFIG:
-        default: true
-        type: boolean
-      KERNEL_DEFCONFIG:
-        default: "vendor/lahaina-qgki_defconfig"
-        type: string
-      CCACHE_CONFIG:
         default: true
         type: boolean
 
@@ -26,64 +20,58 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Ccache
-        if: github.event.inputs.CCACHE_CONFIG == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: 9RT-SukiSU-Ultra-2025-11-22
+          key: 9RT-SukiSU-Ultra-NoSUSFS-2025-11-22
 
-      - name: Setup Environment + Proton Clang
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y bc bison flex libelf-dev libssl-dev libclang-dev
+          sudo apt install -y bc bison flex libelf-dev libssl-dev libclang-dev libz-dev
+
+      - name: Setup Proton-Clang
+        run: |
           export CLANG_PATH=~/proton-clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
-          sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
+          echo "$CLANG_PATH/bin" >> $GITHUB_PATH
 
-      - name: Clone Kernel Source
+      - name: Clone kernel source
         run: |
           git clone https://github.com/natsumerinchan/android_kernel_oneplus_sm8350.git -b fourteen-qpr3 kernel --depth=1
           echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
 
-      - name: Integrate Latest SukiSU Ultra (main branch = no SUSFS)
+      - name: Integrate SukiSU Ultra (latest main branch)
         run: |
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
-          # Force required options (safety)
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" \
+          scripts/config --file "arch/arm64/configs/vendor/lahaina-qgki_defconfig" \
             -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS -e CONFIG_KSU
 
-      - name: Build Kernel
+      - name: Build kernel (with forced LTO disable)
         run: |
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
-          export CLANG_PATH=~/proton-clang
-          export PATH="$CLANG_PATH/bin:$PATH"
 
+          # Defconfig
           make O=out \
             CC="ccache clang" \
-            CXX="ccache clang++" \
-            CROSS_COMPILE="$CLANG_PATH/bin/aarch64-linux-gnu-" \
-            CROSS_COMPILE_ARM32="$CLANG_PATH/bin/arm-linux-gnueabi-" \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            ${{ github.event.inputs.KERNEL_DEFCONFIG }}
+            vendor/lahaina-qgki_defconfig
 
-          # Disable LTO on low RAM runner (this is the #1 cause of silent linking death on GitHub)
-          if [ $(awk '/MemTotal/ {print $2}' /proc/meminfo) -lt 16000000 ]; then
-            scripts/config --file out/.config -d LTO_CLANG -d THINLTO -d LTO_CLANG_THIN -e LTO_NONE
-            make O=out olddefconfig
-          fi
+          # Force-disable all forms of LTO (this is the fix)
+          scripts/config --file out/.config \
+            -d LTO_CLANG -d LTO_CLANG_THIN -d LTO_CLANG_FULL -d THINLTO -e LTO_NONE
+          make O=out olddefconfig
 
+          # Final build
           make O=out \
             CC="ccache clang" \
             CXX="ccache clang++" \
-            CROSS_COMPILE="$CLANG_PATH/bin/aarch64-linux-gnu-" \
-            CROSS_COMPILE_ARM32="$CLANG_PATH/bin/arm-linux-gnueabi-" \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
@@ -92,9 +80,9 @@ jobs:
             STRIP=llvm-strip \
             -j$(nproc --all) 2>&1 | tee build.log
 
-          [ -f out/arch/arm64/boot/Image ] || (echo "BUILD FAILED - Image not found" && cat build.log | tail -50 && exit 1)
+          [ -f out/arch/arm64/boot/Image ] || (echo "BUILD FAILED" && tail -100 build.log && exit 1)
 
-      - name: Package with AnyKernel3
+      - name: Package AnyKernel3
         run: |
           cd kernel
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1
@@ -103,13 +91,13 @@ jobs:
           zip -r9 "../SukiSU-Ultra-martini-${{ env.TAG_NAME }}.zip" * -x .git README.md
           mv "../SukiSU-Ultra-martini-${{ env.TAG_NAME }}.zip" ../out/arch/arm64/boot/
 
-      - name: Upload Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SukiSU-Ultra-martini-${{ env.TAG_NAME }}
           path: kernel/out/arch/arm64/boot/*.zip
 
-      - name: Upload to Release
+      - name: Create/Release
         if: github.event.inputs.RELEASE_CONFIG == 'true'
         uses: ncipollo/release-action@v1
         with:
