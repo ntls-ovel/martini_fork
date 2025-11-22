@@ -1,37 +1,38 @@
-name: Pixel OS KSU-Next Optimized
+name: Pixel OS KSU-Next Ultimate
+
 on:
-  workflow_dispatch:
-    inputs:
-      RELEASE_CONFIG:
-        description: 'Upload to Releases'
-        required: true
-        default: true
-        type: boolean
-      KERNEL_SOURCE:
-        description: 'Kernel Source'
-        required: true
-        default: "https://github.com/beet-stuffs/android_kernel_oneplus_sm8350"
-        type: string
-      KERNEL_SOURCE_BRANCH:
-        description: 'Kernel Branch'
-        required: true
-        default: "fourteen-qpr2"
-        type: string
-      KERNEL_DEFCONFIG:
-        description: 'Kernel Config'
-        required: true
-        default: "vendor/lahaina-qgki_defconfig"
-        type: string
-      KERNELSU_CONFIG:
-        description: 'Compile KernelSU-Next'
-        required: true
-        default: true
-        type: boolean
-      CCACHE_CONFIG:
-        description: 'Use Ccache'
-        required: true
-        default: true
-        type: boolean
+    workflow_dispatch:
+      inputs:
+        RELEASE_CONFIG:
+          description: 'Upload to Releases'
+          required: true
+          default: true
+          type: boolean
+        KERNEL_SOURCE:
+          description: 'Kernel Source'
+          required: true
+          default: "https://github.com/beet-stuffs/android_kernel_oneplus_sm8350"
+          type: string
+        KERNEL_SOURCE_BRANCH:
+          description: 'kernel Branch'
+          required: true
+          default: "fourteen-qpr2"
+          type: string
+        KERNEL_DEFCONFIG:
+          description: 'Kernel Config'
+          required: true
+          default: "vendor/lahaina-qgki_defconfig"
+          type: string
+        KERNELSU_CONFIG:
+          description: 'Compile KernelSU-Next'
+          required: true
+          default: true
+          type: boolean          
+        CCACHE_CONFIG:
+          description: 'Use Ccache'
+          required: true
+          default: true
+          type: boolean
 
 jobs:
   build:
@@ -41,7 +42,6 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_MAXSIZE: "2G"
       CCACHE_HARDLINK: "true"
-    
     steps:
       - uses: actions/checkout@v4
       
@@ -49,144 +49,126 @@ jobs:
         if: github.event.inputs.CCACHE_CONFIG == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: PixelOS-KSUNext-Optimized
-      
+          key: PixelOS-KSUNext-Ultimate
+
       - name: Setup Environment
         run: |
           export CLANG_PATH=~/clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
           sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
           sudo apt install --fix-missing
+          # Standardize LLVM setup
           export LLVM_VERSION=13
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh $LLVM_VERSION
           rm ./llvm.sh
-          sudo apt install --fix-missing
-          sudo ln -s --force /usr/bin/clang-$LLVM_VERSION /usr/bin/clang
-          sudo ln -s --force /usr/bin/ld.lld-$LLVM_VERSION /usr/bin/ld.lld
-          sudo ln -s --force /usr/bin/llvm-objdump-$LLVM_VERSION /usr/bin/llvm-objdump
-          sudo ln -s --force /usr/bin/llvm-ar-$LLVM_VERSION /usr/bin/llvm-ar
-          sudo ln -s --force /usr/bin/llvm-nm-$LLVM_VERSION /usr/bin/llvm-nm
-          sudo ln -s --force /usr/bin/llvm-strip-$LLVM_VERSION /usr/bin/llvm-strip
-          sudo ln -s --force /usr/bin/llvm-objcopy-$LLVM_VERSION /usr/bin/llvm-objcopy
-          sudo ln -s --force /usr/bin/llvm-readelf-$LLVM_VERSION /usr/bin/llvm-readelf
-          sudo ln -s --force /usr/bin/clang++-$LLVM_VERSION /usr/bin/clang++
-      
-      - name: Clone Kernel
+
+      - name: Git kernel
         run: |
           git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
           echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
-          cd kernel
-          git config --global user.email "build@github.com"
-          git config --global user.name "GitHub Build"
-      
-      - name: Apply CAF Updates & Security Patches
+
+      - name: Patch WireGuard & Optimization
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          git fetch https://git.codelinaro.org/clo/la/kernel_platform/manifest refs/tags/LE.UM.5.4.r1-18000-STD.SMxxx0.1 --depth=1
-          git merge --no-edit --strategy-option=theirs FETCH_HEAD || true
-          curl -sL https://android.googlesource.com/kernel/common/+archive/refs/heads/android-5.4-security.tar.gz | tar -xzf - --wildcards '*.patch'
-          for patch in *.patch; do patch -p1 < "$patch" || true; done
-      
+          
+          # --- 1. Patch Native WireGuard (Safe & Fast) ---
+          # This is much safer than "git merging" a CAF tag because it uses a smart patch script.
+          echo "Patching WireGuard..."
+          git clone https://git.zx2c4.com/wireguard-linux-compat
+          cd wireguard-linux-compat
+          ./kernel-tree-scripts/patch-kernel.sh ../
+          cd ..
+          
+          # --- 2. Performance & Features Config ---
+          CONFIG_FILE="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
+          
+          # Enable WireGuard
+          scripts/config --file $CONFIG_FILE -e WIREGUARD
+          
+          # Enable BBR (Better Speed/Congestion Control)
+          scripts/config --file $CONFIG_FILE -e TCP_CONGESTION_BBR 
+          sed -i 's/CONFIG_DEFAULT_TCP_CONGESTION=.*/CONFIG_DEFAULT_TCP_CONGESTION="bbr"/' $CONFIG_FILE
+          
+          # Enable OverlayFS (Critical for Magic Mounts)
+          scripts/config --file $CONFIG_FILE -e OVERLAY_FS
+
       - name: Setup KernelSU-Next
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" \
-            -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS \
-            -e LTO_CLANG -e THINLTO -e SHADOW_CALL_STACK
-      
-      - name: Add WireGuard Support
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          git clone --depth=1 https://git.zx2c4.com/wireguard-linux-compat
-          cp -r wireguard-linux-compat/src/* net/
-          echo 'obj-y += wireguard/' >> net/Makefile
-          echo 'source "net/wireguard/Kconfig"' >> net/Kconfig
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" -e WIREGUARD
-      
-      - name: Apply Performance Patches
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          curl -sL https://github.com/mvaisakh/oneplus9pro/raw/main/patches/0001-lz4-optimize-for-arm64.patch | patch -p1
-          curl -sL https://github.com/mvaisakh/oneplus9pro/raw/main/patches/0002-cpu-scheduler-cass.patch | patch -p1
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" \
-            -d CONFIG_UCLAMP_TASK -e CONFIG_CPU_FREQ_GOV_SCHEDUTIL -e CONFIG_SCHED_WALT
-      
-      - name: Configure Memory Management
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" \
-            -e ZRAM -e ZRAM_WRITEBACK -e ZRAM_MEMORY_TRACKING \
-            -d ZRAM_DEF_COMP_LZORLE -e ZRAM_DEF_COMP_ZSTD \
-            -e USERFAULTFD -e LRU_GEN -e LRU_GEN_ENABLED
-      
-      - name: Build Kernel
+          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+
+      - name: Make kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export KERNEL_DEFCONFIG=${{ github.event.inputs.KERNEL_DEFCONFIG }}
-          export KERNEL_PATH=$PWD
           export CLANG_PATH=~/clang
           export PATH=${CLANG_PATH}/bin:${PATH}
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export SUBARCH=arm64
           
-          if [ ! -e "$CLANG_PATH/README.md" ]; then
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
-          fi
+          # Clean artifacts
+          make O=out clean
           
-          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 \
-            CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- \
-            LD=ld.lld $KERNEL_DEFCONFIG
+          # Generate Config
+          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- LD=ld.lld $KERNEL_DEFCONFIG
           
+          # --- SMART LTO HANDLER ---
+          # If RAM is low (< 16GB), DISABLE LTO to prevent crashes.
+          # If RAM is high (Self-hosted runner), ENABLE ThinLTO for performance.
           if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
-            scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
+              echo "Low RAM detected. Disabling LTO to prevent build crash."
+              scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
+          else
+              echo "High RAM detected. Enabling ThinLTO for max performance."
+              scripts/config --file out/.config -e LTO_CLANG -e THINLTO
           fi
           
-          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 -j`nproc` \
-            CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- \
-            LD=ld.lld KCFLAGS="-O3 -mcpu=cortex-a76" 2>&1 | tee kernel.log
+          # Align config
+          make O=out olddefconfig
+          
+          # Build
+          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 -j`nproc` CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
           
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "BUILD FAILED"
-            exit 1
+             echo "BUILD FAILED"
+             exit 1
           fi
-      
-      - name: Create AnyKernel3 Package
+
+      - name: Create Anykernel3 file
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export KERNEL_PATH=$PWD
           git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 $KERNEL_PATH/AnyKernel3
-          
           if test -e $KERNEL_PATH/out/arch/arm64/boot/Image && test -d $KERNEL_PATH/AnyKernel3; then
-            zip_name="PixelOS-KSUNext-Optimized-martini-${{ env.TAG_NAME }}.zip"
-            cd $KERNEL_PATH/AnyKernel3
-            cp $KERNEL_PATH/out/arch/arm64/boot/Image $KERNEL_PATH/AnyKernel3
-            zip -r ${zip_name} *
-            mv ${zip_name} $KERNEL_PATH/out/arch/arm64/boot
+             zip_name="PixelOS-KSUNext-Ultimate-martini-${{ env.TAG_NAME }}.zip"
+             cd $KERNEL_PATH/AnyKernel3
+             cp $KERNEL_PATH/out/arch/arm64/boot/Image $KERNEL_PATH/AnyKernel3
+             zip -r ${zip_name} *
+             mv ${zip_name} $KERNEL_PATH/out/arch/arm64/boot
           else
-            echo "PACKAGING FAILED"
-            exit 1
+             echo "PACKAGING FAILED"
+             exit 1
           fi
-      
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PixelOS-KSUNext-Optimized-martini-${{ env.TAG_NAME }}
-          path: kernel/out/arch/arm64/boot/PixelOS-KSUNext-Optimized-martini-*.zip
-      
+          name: PixelOS-KSUNext-Ultimate-martini-${{ env.TAG_NAME }}
+          path: |
+            kernel/AnyKernel3/*
+
       - name: Upload to Release
         if: github.event.inputs.RELEASE_CONFIG == 'true'
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSUNext-Optimized-martini-${{ env.TAG_NAME }}.zip"
-          tag: "ONEPLUS9RT-PixelOS-KSUNext-Optimized-${{ env.TAG_NAME }}"
-          name: "PixelOS KSUNext Optimized martini ${{ env.TAG_NAME }}"
+          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSUNext-Ultimate-martini-${{ env.TAG_NAME }}.zip"
+          tag: "ONEPLUS9RT-PixelOS-KSUNext-Ultimate-${{ env.TAG_NAME }}"
+          name: "PixelOS KSUNext Ultimate martini ${{ env.TAG_NAME }}"
           allowUpdates: true
           replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
