@@ -92,10 +92,13 @@ jobs:
         run: |
           cd kernel
           
-          # 1. Native WireGuard (Speed Boost) - CRITICAL MISSING STEP RESTORED
+          # 1. Native WireGuard (Corrected Method)
           echo "Patching Native WireGuard..."
+          # Clone the compatibility repo
           git clone https://git.zx2c4.com/wireguard-linux-compat
-          ./wireguard-linux-compat/kernel-tree-scripts/patch-kernel.sh .
+          
+          # Use create-patch.sh and apply it immediately to the current directory
+          ./wireguard-linux-compat/kernel-tree-scripts/create-patch.sh | patch -p1
           
           # 2. Apply Configs
           CONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
@@ -107,7 +110,7 @@ jobs:
           scripts/config --file $CONFIG_PATH -e TCP_CONGESTION_BBR 
           sed -i 's/CONFIG_DEFAULT_TCP_CONGESTION=.*/CONFIG_DEFAULT_TCP_CONGESTION="bbr"/' $CONFIG_PATH
           
-          # OverlayFS (Magisk/KSU Module Support) - CRITICAL MISSING STEP RESTORED
+          # OverlayFS (Magisk/KSU Module Support)
           scripts/config --file $CONFIG_PATH -e OVERLAY_FS
 
       - name: Setup KernelSU-Next
@@ -133,7 +136,7 @@ jobs:
           # Generate Config
           make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld $KERNEL_DEFCONFIG
           
-          # --- SMART LTO CHECK (Restored Safety) ---
+          # --- SMART LTO CHECK ---
           # Automatically disables LTO if RAM is < 16GB to prevent crash
           TOTAL_MEM=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
           if [[ $TOTAL_MEM -lt 16000000 ]]; then
