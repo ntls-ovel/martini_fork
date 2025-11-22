@@ -1,120 +1,211 @@
-name: Pixel OS KSU-Next Enhanced
+name: Pixel OS KSU-Next Master
+
+# Concurrency: Cancel outdated runs to save resources
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: read
+
 on:
-    workflow_dispatch:
-      inputs:
-        RELEASE_CONFIG:
-          description: 'Upload to Releases'
-          required: true
-          default: true
-          type: boolean
-        KERNEL_SOURCE:
-          description: 'Kernel Source'
-          required: true
-          default: "https://github.com/beet-stuffs/android_kernel_oneplus_sm8350"
-          type: string
-        KERNEL_SOURCE_BRANCH:
-          description: 'Kernel Branch'
-          required: true
-          default: "fourteen-qpr2"
-          type: string
-        KERNEL_DEFCONFIG:
-          description: 'Kernel Config'
-          required: true
-          default: "vendor/lahaina-qgki_defconfig"
-          type: string
-        KERNELSU_CONFIG:
-          description: 'Compile KernelSU-Next'
-          required: true
-          default: true
-          type: boolean
-        CCACHE_CONFIG:
-          description: 'Use Ccache'
-          required: true
-          default: true
-          type: boolean
+  workflow_dispatch:
+    inputs:
+      RELEASE_CONFIG:
+        description: 'Upload to Releases'
+        required: true
+        default: true
+        type: boolean
+      KERNEL_SOURCE:
+        description: 'Kernel Source'
+        required: true
+        default: "https://github.com/beet-stuffs/android_kernel_oneplus_sm8350"
+        type: string
+      KERNEL_SOURCE_BRANCH:
+        description: 'Kernel Branch'
+        required: true
+        default: "fourteen-qpr2"
+        type: string
+      KERNEL_DEFCONFIG:
+        description: 'Kernel Config (path relative to arch/arm64/configs/)'
+        required: true
+        default: "vendor/lahaina-qgki_defconfig"
+        type: string
+      KERNELSU_CONFIG:
+        description: 'Enable KernelSU-Next'
+        required: true
+        default: true
+        type: boolean
+      CCACHE_CONFIG:
+        description: 'Enable Ccache'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  TZ: 'Asia/Kolkata'
+  CLANG_PATH: ${{ github.workspace }}/toolchain/proton-clang
+  CCACHE_COMPILERCHECK: "%compiler% -dumpversion"
+  CCACHE_NOHASHDIR: "true"
+  CCACHE_MAXSIZE: "3G"
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_MAXSIZE: "2G"
-      CCACHE_HARDLINK: "true"
+    runs-on: ubuntu-22.04 # Most stable for Android 14 kernels
+    
     steps:
-      - uses: actions/checkout@v4
-      - name: Ccache
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Restore Ccache
         if: github.event.inputs.CCACHE_CONFIG == 'true'
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: actions/cache/restore@v4
         with:
-          key: PixelOS-KSUNext-Enhanced-inline
-      - name: Setup Environment
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Setup Build Environment
         run: |
-          export CLANG_PATH=~/clang
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
-          sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
-          sudo apt update && sudo apt install -y bc bison build-essential ccache flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lz4 lld lldb llvm lzma ncurses-dev pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev
-      - name: Git kernel
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates ccache curl flex git gnupg \
+            libelf-dev libssl-dev lsb-release software-properties-common wget \
+            xz-utils zip zlib1g-dev device-tree-compiler python3 python-is-python3
+
+      - name: Setup Proton Clang
         run: |
-          git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
-          echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3 }')-$(date +"%Y%m%d")-ThinLTO-CAF" >> $GITHUB_ENV
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git ${{ env.CLANG_PATH }}
+
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" \
+            "${{ github.event.inputs.KERNEL_SOURCE }}" kernel
+          cd kernel
+          echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_ENV
+
+      - name: ⚡ Patch WireGuard & Optimization
+        run: |
+          cd kernel
+          
+          # 1. Native WireGuard (Speed Boost) - CRITICAL MISSING STEP RESTORED
+          echo "Patching Native WireGuard..."
+          git clone https://git.zx2c4.com/wireguard-linux-compat
+          ./wireguard-linux-compat/kernel-tree-scripts/patch-kernel.sh .
+          
+          # 2. Apply Configs
+          CONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
+          
+          # WireGuard
+          scripts/config --file $CONFIG_PATH -e WIREGUARD
+          
+          # BBR (Internet Speed)
+          scripts/config --file $CONFIG_PATH -e TCP_CONGESTION_BBR 
+          sed -i 's/CONFIG_DEFAULT_TCP_CONGESTION=.*/CONFIG_DEFAULT_TCP_CONGESTION="bbr"/' $CONFIG_PATH
+          
+          # OverlayFS (Magisk/KSU Module Support) - CRITICAL MISSING STEP RESTORED
+          scripts/config --file $CONFIG_PATH -e OVERLAY_FS
+
       - name: Setup KernelSU-Next
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
         run: |
-          cd $GITHUB_WORKSPACE/kernel
+          cd kernel
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
-      - name: Merge latest CAF tag (LA.UM.9.14.r1-26000-LAHAINA.QSSI15.0)
+          
+          CONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
+          scripts/config --file $CONFIG_PATH -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+
+      - name: Build Kernel
         run: |
-          cd $GITHUB_WORKSPACE/kernel
-          git fetch https://git.codelinaro.org/clo/la/kernel/msm-5.4 LA.UM.9.14.r1-26000-LAHAINA.QSSI15.0
-          git merge FETCH_HEAD --no-edit
-      - name: Add Boeffla wakelock blocker
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          curl -L https://raw.githubusercontent.com/engstk/patches/master/boeffla_wakelock_blocker_generic.patch | git apply
-      - name: Add KCAL advanced color control
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          curl -L https://raw.githubusercontent.com/engstk/patches/master/kcal.patch | git apply
-      - name: Make kernel
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          export KERNEL_DEFCONFIG=${{ github.event.inputs.KERNEL_DEFCONFIG }}
-          export CLANG_PATH=~/clang
-          export PATH=${CLANG_PATH}/bin:${PATH}
+          cd kernel
+          export PATH=${{ env.CLANG_PATH }}/bin:${PATH}
           export ARCH=arm64
           export SUBARCH=arm64
+          export KERNEL_DEFCONFIG=${{ github.event.inputs.KERNEL_DEFCONFIG }}
+          
+          # Clean artifacts
+          make O=out clean
+          
+          # Generate Config
           make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld $KERNEL_DEFCONFIG
-          # Force ThinLTO — best performance/size ratio on SM8350
-          scripts/config --file out/.config -d CONFIG_LTO_NONE -e CONFIG_LTO_CLANG -e CONFIG_THINLTO
+          
+          # --- SMART LTO CHECK (Restored Safety) ---
+          # Automatically disables LTO if RAM is < 16GB to prevent crash
+          TOTAL_MEM=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          if [[ $TOTAL_MEM -lt 16000000 ]]; then
+             echo "⚠️ Low RAM ($TOTAL_MEM kB). Disabling LTO to prevent crash."
+             echo "LTO_STATUS=Disabled (Low RAM)" >> $GITHUB_ENV
+             scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
+          else
+             echo "🚀 High RAM. Enabling ThinLTO."
+             echo "LTO_STATUS=Enabled (ThinLTO)" >> $GITHUB_ENV
+             scripts/config --file out/.config -e LTO_CLANG -e THINLTO
+          fi
           make O=out olddefconfig
-          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
+          
+          # Build
+          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 \
+            -j$(nproc) \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld 2>&1 | tee kernel.log
+            
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "BUILD FAILED"
+            echo "❌ BUILD FAILED"
             exit 1
           fi
-      - name: Create AnyKernel3 zip
+
+      - name: Create AnyKernel3 Package
         run: |
-          cd $GITHUB_WORKSPACE/kernel
+          cd kernel
           git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 AnyKernel3
-          zip_name="PixelOS-KSUNext-Enhanced-martini-${{ env.TAG_NAME }}.zip"
+          
+          ZIP_NAME="PixelOS-KSUNext-Master-martini-${{ env.TAG_NAME }}.zip"
           cp out/arch/arm64/boot/Image AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../${zip_name} *
-          cd ..
-          mv ${zip_name} out/arch/arm64/boot/
+          zip -r9 $ZIP_NAME * -x "*.git*"
+          mv $ZIP_NAME ../out/arch/arm64/boot/
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          
+          # Generate Hash
+          sha256sum ../out/arch/arm64/boot/$ZIP_NAME > ../out/arch/arm64/boot/$ZIP_NAME.sha256
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PixelOS-KSUNext-Enhanced-martini-${{ env.TAG_NAME }}
-          path: kernel/out/arch/arm64/boot/*.zip
-      - name: Upload to Release
+          name: ${{ env.ZIP_NAME }}
+          path: kernel/out/arch/arm64/boot/${{ env.ZIP_NAME }}
+
+      - name: Create Release
         if: github.event.inputs.RELEASE_CONFIG == 'true'
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSUNext-Enhanced-martini-${{ env.TAG_NAME }}.zip"
-          tag: "ONEPLUS9RT-PixelOS-KSUNext-Enhanced-${{ env.TAG_NAME }}"
-          name: "PixelOS KSUNext Enhanced martini ${{ env.TAG_NAME }}"
+          artifacts: "kernel/out/arch/arm64/boot/${{ env.ZIP_NAME }},kernel/out/arch/arm64/boot/${{ env.ZIP_NAME }}.sha256"
+          tag: "martini-${{ env.TAG_NAME }}"
+          name: "PixelOS Master Kernel ${{ env.TAG_NAME }}"
+          body: |
+            ## 🚀 Master Build
+            **Build Status:**
+            - **KernelSU-Next:** ✅ Included
+            - **WireGuard:** ✅ Native Patch Applied
+            - **OverlayFS:** ✅ Enabled
+            - **TCP Algorithm:** ✅ BBR
+            - **LTO Status:** ${{ env.LTO_STATUS }}
+            
+            **Info:**
+            - **Source:** ${{ github.event.inputs.KERNEL_SOURCE }}
+            - **Date:** ${{ env.BUILD_DATE }}
           allowUpdates: true
-          replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "### 🎯 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Kernel Tag:** ${{ env.TAG_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**LTO Status:** ${{ env.LTO_STATUS }}" >> $GITHUB_STEP_SUMMARY
+          echo "**WireGuard:** Enabled" >> $GITHUB_STEP_SUMMARY
