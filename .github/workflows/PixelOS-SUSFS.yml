@@ -1,5 +1,4 @@
-name: Pixel OS KSU-Next Ultimate
-
+name: Pixel OS KSU-Next Enhanced
 on:
     workflow_dispatch:
       inputs:
@@ -14,7 +13,7 @@ on:
           default: "https://github.com/beet-stuffs/android_kernel_oneplus_sm8350"
           type: string
         KERNEL_SOURCE_BRANCH:
-          description: 'kernel Branch'
+          description: 'Kernel Branch'
           required: true
           default: "fourteen-qpr2"
           type: string
@@ -27,13 +26,12 @@ on:
           description: 'Compile KernelSU-Next'
           required: true
           default: true
-          type: boolean          
+          type: boolean
         CCACHE_CONFIG:
           description: 'Use Ccache'
           required: true
           default: true
           type: boolean
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -44,131 +42,79 @@ jobs:
       CCACHE_HARDLINK: "true"
     steps:
       - uses: actions/checkout@v4
-      
       - name: Ccache
         if: github.event.inputs.CCACHE_CONFIG == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: PixelOS-KSUNext-Ultimate
-
+          key: PixelOS-KSUNext-Enhanced-inline
       - name: Setup Environment
         run: |
           export CLANG_PATH=~/clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang $CLANG_PATH
           sh -c "$(curl -sSL https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh)"
-          sudo apt install --fix-missing
-          # Standardize LLVM setup
-          export LLVM_VERSION=13
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh $LLVM_VERSION
-          rm ./llvm.sh
-
+          sudo apt update && sudo apt install -y bc bison build-essential ccache flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lz4 lld lldb llvm lzma ncurses-dev pngcrush schedtool squashfs-tools xsltproc zip zlib1g-dev
       - name: Git kernel
         run: |
           git clone "${{ github.event.inputs.KERNEL_SOURCE }}" -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" kernel --depth=1
-          echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3}')-$(date +"%Y%m%d")" >> $GITHUB_ENV
-
-      - name: Patch WireGuard & Optimization
-        run: |
-          cd $GITHUB_WORKSPACE/kernel
-          
-          # --- 1. Patch Native WireGuard (Safe & Fast) ---
-          # This is much safer than "git merging" a CAF tag because it uses a smart patch script.
-          echo "Patching WireGuard..."
-          git clone https://git.zx2c4.com/wireguard-linux-compat
-          cd wireguard-linux-compat
-          ./kernel-tree-scripts/patch-kernel.sh ../
-          cd ..
-          
-          # --- 2. Performance & Features Config ---
-          CONFIG_FILE="arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}"
-          
-          # Enable WireGuard
-          scripts/config --file $CONFIG_FILE -e WIREGUARD
-          
-          # Enable BBR (Better Speed/Congestion Control)
-          scripts/config --file $CONFIG_FILE -e TCP_CONGESTION_BBR 
-          sed -i 's/CONFIG_DEFAULT_TCP_CONGESTION=.*/CONFIG_DEFAULT_TCP_CONGESTION="bbr"/' $CONFIG_FILE
-          
-          # Enable OverlayFS (Critical for Magic Mounts)
-          scripts/config --file $CONFIG_FILE -e OVERLAY_FS
-
+          echo "TAG_NAME=v5.4.$(grep "^SUBLEVEL =" kernel/Makefile | awk '{print $3 }')-$(date +"%Y%m%d")-ThinLTO-CAF" >> $GITHUB_ENV
       - name: Setup KernelSU-Next
         if: github.event.inputs.KERNELSU_CONFIG == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           scripts/config --file "arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}" -e MODULES -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
-
+      - name: Merge latest CAF tag (LA.UM.9.14.r1-26000-LAHAINA.QSSI15.0)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          git fetch https://git.codelinaro.org/clo/la/kernel/msm-5.4 LA.UM.9.14.r1-26000-LAHAINA.QSSI15.0
+          git merge FETCH_HEAD --no-edit
+      - name: Add Boeffla wakelock blocker
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          curl -L https://raw.githubusercontent.com/engstk/patches/master/boeffla_wakelock_blocker_generic.patch | git apply
+      - name: Add KCAL advanced color control
+        run: |
+          cd $GITHUB_WORKSPACE/kernel
+          curl -L https://raw.githubusercontent.com/engstk/patches/master/kcal.patch | git apply
       - name: Make kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel
           export KERNEL_DEFCONFIG=${{ github.event.inputs.KERNEL_DEFCONFIG }}
           export CLANG_PATH=~/clang
           export PATH=${CLANG_PATH}/bin:${PATH}
-          export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export SUBARCH=arm64
-          
-          # Clean artifacts
-          make O=out clean
-          
-          # Generate Config
-          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- LD=ld.lld $KERNEL_DEFCONFIG
-          
-          # --- SMART LTO HANDLER ---
-          # If RAM is low (< 16GB), DISABLE LTO to prevent crashes.
-          # If RAM is high (Self-hosted runner), ENABLE ThinLTO for performance.
-          if [[ $(echo "$(awk '/MemTotal/ {print $2}' /proc/meminfo) < 16000000" | bc -l) -eq 1 ]]; then
-              echo "Low RAM detected. Disabling LTO to prevent build crash."
-              scripts/config --file out/.config -d LTO -d LTO_CLANG -d THINLTO -e LTO_NONE
-          else
-              echo "High RAM detected. Enabling ThinLTO for max performance."
-              scripts/config --file out/.config -e LTO_CLANG -e THINLTO
-          fi
-          
-          # Align config
+          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld $KERNEL_DEFCONFIG
+          # Force ThinLTO — best performance/size ratio on SM8350
+          scripts/config --file out/.config -d CONFIG_LTO_NONE -e CONFIG_LTO_CLANG -e CONFIG_THINLTO
           make O=out olddefconfig
-          
-          # Build
-          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 -j`nproc` CROSS_COMPILE=$CLANG_PATH/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$CLANG_PATH/bin/arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
-          
+          make O=out CC="ccache clang" CXX="ccache clang++" ARCH=arm64 -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld 2>&1 | tee kernel.log
           if [ ! -f out/arch/arm64/boot/Image ]; then
-             echo "BUILD FAILED"
-             exit 1
+            echo "BUILD FAILED"
+            exit 1
           fi
-
-      - name: Create Anykernel3 file
+      - name: Create AnyKernel3 zip
         run: |
           cd $GITHUB_WORKSPACE/kernel
-          export KERNEL_PATH=$PWD
-          git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 $KERNEL_PATH/AnyKernel3
-          if test -e $KERNEL_PATH/out/arch/arm64/boot/Image && test -d $KERNEL_PATH/AnyKernel3; then
-             zip_name="PixelOS-KSUNext-Ultimate-martini-${{ env.TAG_NAME }}.zip"
-             cd $KERNEL_PATH/AnyKernel3
-             cp $KERNEL_PATH/out/arch/arm64/boot/Image $KERNEL_PATH/AnyKernel3
-             zip -r ${zip_name} *
-             mv ${zip_name} $KERNEL_PATH/out/arch/arm64/boot
-          else
-             echo "PACKAGING FAILED"
-             exit 1
-          fi
-
+          git clone https://gitlab.com/inferno0230/AnyKernel3.git --depth=1 AnyKernel3
+          zip_name="PixelOS-KSUNext-Enhanced-martini-${{ env.TAG_NAME }}.zip"
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          cd AnyKernel3
+          zip -r9 ../${zip_name} *
+          cd ..
+          mv ${zip_name} out/arch/arm64/boot/
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PixelOS-KSUNext-Ultimate-martini-${{ env.TAG_NAME }}
-          path: |
-            kernel/AnyKernel3/*
-
+          name: PixelOS-KSUNext-Enhanced-martini-${{ env.TAG_NAME }}
+          path: kernel/out/arch/arm64/boot/*.zip
       - name: Upload to Release
         if: github.event.inputs.RELEASE_CONFIG == 'true'
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSUNext-Ultimate-martini-${{ env.TAG_NAME }}.zip"
-          tag: "ONEPLUS9RT-PixelOS-KSUNext-Ultimate-${{ env.TAG_NAME }}"
-          name: "PixelOS KSUNext Ultimate martini ${{ env.TAG_NAME }}"
+          artifacts: "kernel/out/arch/arm64/boot/PixelOS-KSUNext-Enhanced-martini-${{ env.TAG_NAME }}.zip"
+          tag: "ONEPLUS9RT-PixelOS-KSUNext-Enhanced-${{ env.TAG_NAME }}"
+          name: "PixelOS KSUNext Enhanced martini ${{ env.TAG_NAME }}"
           allowUpdates: true
           replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
